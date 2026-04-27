@@ -1,8 +1,10 @@
 import os
 import json
 import re
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 import requests
 from google import genai
@@ -15,70 +17,60 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 
 
 def fetch_news():
-    url = "https://api.gdeltproject.org/api/v2/doc/doc"
-
     queries = [
-        "world",
-        "global crisis",
-        "international security",
-        "global economy",
+        "top world news",
+        "global economy news",
+        "war geopolitics news",
+        "climate disaster technology world news",
     ]
 
     all_articles = []
 
     for query in queries:
-        params = {
-            "query": query,
-            "mode": "artlist",
-            "format": "json",
-            "maxrecords": 20,
-            "sort": "hybridrel",
-            "timespan": "24h",
-        }
-
-        response = requests.get(url, params=params, timeout=30)
-
-        print("GDELT URL:", response.url)
-        print("Status code:", response.status_code)
-        print("Content-Type:", response.headers.get("content-type"))
-        print("First 300 chars:", response.text[:300])
-
-        response.raise_for_status()
+        rss_url = (
+            "https://news.google.com/rss/search?"
+            f"q={quote(query)}&hl=en-US&gl=US&ceid=US:en"
+        )
 
         try:
-            data = response.json()
-        except Exception:
-            print("GDELT did not return JSON.")
-            print(response.text[:1000])
-            continue
+            response = requests.get(
+                rss_url,
+                timeout=20,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            response.raise_for_status()
 
-        articles = data.get("articles", [])
+            root = ET.fromstring(response.content)
 
-        for article in articles:
-            title = article.get("title")
-            article_url = article.get("url")
-            domain = article.get("domain")
-            source_country = article.get("sourceCountry")
-            seen_date = article.get("seendate")
+            for item in root.findall(".//item"):
+                title = item.findtext("title")
+                link = item.findtext("link")
+                pub_date = item.findtext("pubDate")
+                source = item.findtext("source")
 
-            if title and article_url:
-                all_articles.append({
-                    "title": title,
-                    "url": article_url,
-                    "domain": domain,
-                    "source_country": source_country,
-                    "seen_date": seen_date,
-                })
+                if title and link:
+                    all_articles.append({
+                        "title": title,
+                        "url": link,
+                        "source": source or "Google News",
+                        "seen_date": pub_date,
+                    })
 
-    seen_urls = set()
+        except Exception as e:
+            print(f"Failed to fetch RSS for query '{query}': {e}")
+
+    seen_titles = set()
     unique_articles = []
 
     for article in all_articles:
-        if article["url"] not in seen_urls:
+        clean_title = article["title"].lower().strip()
+
+        if clean_title not in seen_titles:
             unique_articles.append(article)
-            seen_urls.add(article["url"])
+            seen_titles.add(clean_title)
 
     return unique_articles[:50]
+
 
 def summarize_news(articles):
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -104,6 +96,7 @@ Rules:
 - Each story must be less than 500 words.
 - Be concise, direct, and useful.
 - Focus on global impact: war, geopolitics, elections, economy, climate, technology, public safety, diplomacy, major disasters.
+- Use the article URL as the source.
 
 JSON format:
 [
@@ -136,22 +129,31 @@ Articles:
     raw_text = response.text.strip()
 
     try:
-        return json.loads(raw_text)
+        stories = json.loads(raw_text)
     except json.JSONDecodeError:
         match = re.search(r"\[.*\]", raw_text, re.DOTALL)
         if not match:
             raise ValueError(f"Gemini response was not valid JSON:\n{raw_text}")
-        return json.loads(match.group(0))
+        stories = json.loads(match.group(0))
+
+    if not isinstance(stories, list):
+        raise ValueError("Gemini response is not a list.")
+
+    return stories[:3]
 
 
 def send_discord_message(story, index):
+    headline = story.get("headline", "No headline")
+    content = story.get("content", "No content")
+    source = story.get("source", "No source")
+
     message = f"""🌍 **World News {index}/3**
 
-**{story["headline"]}**
+**{headline}**
 
-{story["content"]}
+{content}
 
-Source: {story["source"]}"""
+Source: {source}"""
 
     if len(message) > 1900:
         message = message[:1850] + "\n\n[Message shortened for Discord limit.]"
@@ -172,19 +174,20 @@ def save_log(stories):
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S_UTC")
     filename = log_dir / f"news_{timestamp}.txt"
 
-    lines = []
-    lines.append("AI World News Log")
-    lines.append(f"Generated at: {timestamp}")
-    lines.append("AI model: Gemini 2.5 Flash")
-    lines.append("=" * 60)
-    lines.append("")
+    lines = [
+        "AI World News Log",
+        f"Generated at: {timestamp}",
+        "AI model: Gemini 2.5 Flash",
+        "=" * 60,
+        "",
+    ]
 
     for i, story in enumerate(stories, start=1):
-        lines.append(f"{i}. {story['headline']}")
+        lines.append(f"{i}. {story.get('headline', 'No headline')}")
         lines.append("")
-        lines.append(story["content"])
+        lines.append(story.get("content", "No content"))
         lines.append("")
-        lines.append(f"Source: {story['source']}")
+        lines.append(f"Source: {story.get('source', 'No source')}")
         lines.append("")
         lines.append("-" * 60)
         lines.append("")
@@ -212,13 +215,13 @@ def main():
 
     stories = summarize_news(articles)
 
-    if len(stories) != 3:
-        raise ValueError("Gemini did not return exactly 3 stories.")
+    if len(stories) < 3:
+        raise ValueError("Gemini returned fewer than 3 stories.")
 
-    for i, story in enumerate(stories, start=1):
+    for i, story in enumerate(stories[:3], start=1):
         send_discord_message(story, i)
 
-    save_log(stories)
+    save_log(stories[:3])
 
 
 if __name__ == "__main__":
