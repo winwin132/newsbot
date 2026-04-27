@@ -227,7 +227,3 @@ def main():
 if __name__ == "__main__":
     main()
 
-
-git add main.py
-git commit -m "Use Google News RSS with Gemini"
-git push
