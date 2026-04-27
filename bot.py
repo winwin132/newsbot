@@ -14,12 +14,17 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
+    await bot.tree.sync()
     print(f"Logged in as {bot.user}")
+    print("Slash commands synced")
 
 
-@bot.command()
-async def news(ctx):
-    await ctx.send("⏳ Fetching news...")
+@bot.tree.command(name="news", description="Get 3 AI summarized world news")
+async def news(interaction: discord.Interaction):
+    await interaction.response.send_message(
+        "⏳ Fetching news... wait 10–30 seconds",
+        ephemeral=True
+    )
 
     url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/dispatches"
 
@@ -27,15 +32,21 @@ async def news(ctx):
         url,
         headers={
             "Authorization": f"Bearer {GITHUB_TOKEN}",
-            "Accept": "application/vnd.github+json"
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "discord-news-bot",
+            "X-GitHub-Api-Version": "2022-11-28",
         },
-        json={"event_type": "discord_news"}
+        json={"event_type": "discord_news"},
+        timeout=20,
     )
 
     if response.status_code == 204:
-        await ctx.send("✅ News workflow started!")
+        await interaction.followup.send("✅ News workflow started!", ephemeral=True)
     else:
-        await ctx.send(f"❌ Failed: {response.text}")
+        await interaction.followup.send(
+            f"❌ Failed: {response.status_code} {response.text}",
+            ephemeral=True
+        )
 
 
 bot.run(DISCORD_BOT_TOKEN)
