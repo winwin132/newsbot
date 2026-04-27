@@ -17,44 +17,68 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 def fetch_news():
     url = "https://api.gdeltproject.org/api/v2/doc/doc"
 
-    params = {
-        "query": (
-            "world OR global OR war OR economy OR election OR climate "
-            "OR technology OR security OR diplomacy OR market OR disaster"
-        ),
-        "mode": "artlist",
-        "format": "json",
-        "maxrecords": 50,
-        "sort": "hybridrel",
-        "timespan": "24h",
-    }
+    queries = [
+        "world",
+        "global crisis",
+        "international security",
+        "global economy",
+    ]
 
-    response = requests.get(url, params=params, timeout=30)
-    response.raise_for_status()
+    all_articles = []
 
-    data = response.json()
-    articles = data.get("articles", [])
+    for query in queries:
+        params = {
+            "query": query,
+            "mode": "artlist",
+            "format": "json",
+            "maxrecords": 20,
+            "sort": "hybridrel",
+            "timespan": "24h",
+        }
 
-    cleaned = []
+        response = requests.get(url, params=params, timeout=30)
 
-    for article in articles:
-        title = article.get("title")
-        article_url = article.get("url")
-        domain = article.get("domain")
-        source_country = article.get("sourceCountry")
-        seen_date = article.get("seendate")
+        print("GDELT URL:", response.url)
+        print("Status code:", response.status_code)
+        print("Content-Type:", response.headers.get("content-type"))
+        print("First 300 chars:", response.text[:300])
 
-        if title and article_url:
-            cleaned.append({
-                "title": title,
-                "url": article_url,
-                "domain": domain,
-                "source_country": source_country,
-                "seen_date": seen_date,
-            })
+        response.raise_for_status()
 
-    return cleaned[:50]
+        try:
+            data = response.json()
+        except Exception:
+            print("GDELT did not return JSON.")
+            print(response.text[:1000])
+            continue
 
+        articles = data.get("articles", [])
+
+        for article in articles:
+            title = article.get("title")
+            article_url = article.get("url")
+            domain = article.get("domain")
+            source_country = article.get("sourceCountry")
+            seen_date = article.get("seendate")
+
+            if title and article_url:
+                all_articles.append({
+                    "title": title,
+                    "url": article_url,
+                    "domain": domain,
+                    "source_country": source_country,
+                    "seen_date": seen_date,
+                })
+
+    seen_urls = set()
+    unique_articles = []
+
+    for article in all_articles:
+        if article["url"] not in seen_urls:
+            unique_articles.append(article)
+            seen_urls.add(article["url"])
+
+    return unique_articles[:50]
 
 def summarize_news(articles):
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
